@@ -1,0 +1,62 @@
+name: build Mac 0.3.4
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build-mac:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configurar acesso temporario de leitura
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.HC_STUDIO_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/hc_studio_deploy_key
+          chmod 600 ~/.ssh/hc_studio_deploy_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          printf '%s\n' 'Host github.com' '  IdentityFile ~/.ssh/hc_studio_deploy_key' '  IdentitiesOnly yes' >> ~/.ssh/config
+      - name: Obter codigo privado na tag 0.3.4
+        run: git clone --depth 1 --branch v0.3.4 git@github.com:desarmed/hc-studio.git app
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Baixar motores embarcados
+        working-directory: app
+        run: bash scripts/fetch-bins.sh
+      - name: Instalar dependencias
+        working-directory: app
+        run: npm ci
+      - name: Testes Rust
+        working-directory: app
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Montar DMG
+        working-directory: app
+        run: npm run tauri -- build --bundles dmg
+      - name: Prova de instalacao real
+        working-directory: app
+        run: bash scripts/verificar-mac.sh
+      - name: Guardar log da prova
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verificacao-mac-0.3.4
+          path: app/verificacao-mac.log
+          if-no-files-found: warn
+      - name: Copiar DMG aprovado
+        run: |
+          DMG=$(find app/src-tauri/target -type f -name '*0.3.4*aarch64.dmg' -print -quit)
+          test -n "$DMG"
+          cp "$DMG" HC.Studio_0.3.4_aarch64.dmg
+      - name: Publicar release 0.3.4
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.3.4 HC.Studio_0.3.4_aarch64.dmg COMO-INSTALAR-MAC.md --title 'HC Studio 0.3.4' --notes 'Instalador atualizado para Macs com chip Apple (M1, M2, M3 ou M4). Corrige a abertura da pasta de saída e melhora a orientação de autenticação para Stories e Destaques.'
+      - name: Remover chave do workspace
+        if: always()
+        run: rm -f ~/.ssh/hc_studio_deploy_key
